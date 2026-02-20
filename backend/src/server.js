@@ -26,6 +26,7 @@ app.get('/health', async (_req, res) => {
 });
 
 app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/admin')) return next();
   if (!apiKey) return next();
   const provided = req.header('x-api-key');
   if (provided !== apiKey) {
