@@ -1,0 +1,5 @@
+{
+  "Enabled": true,
+  "BaseUrl": "https://spacegame-backend.onrender.com/api",
+  "TimeoutSec": 8
+}

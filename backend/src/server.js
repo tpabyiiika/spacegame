@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -8,9 +9,13 @@ dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT || 8080);
-const apiKey = process.env.API_KEY || '';
-const adminKey = process.env.ADMIN_KEY || '';
 const corsOrigin = process.env.CORS_ORIGIN || '*';
+const authTokenSecret = process.env.AUTH_TOKEN_SECRET || '';
+const authTokenTtlSec = Math.max(300, Number(process.env.AUTH_TOKEN_TTL_SEC || 60 * 60 * 24 * 7));
+
+if (!authTokenSecret) {
+  throw new Error('AUTH_TOKEN_SECRET is required');
+}
 
 app.use(helmet());
 app.use(cors({ origin: corsOrigin === '*' ? true : corsOrigin }));
@@ -25,15 +30,101 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/admin')) return next();
-  if (!apiKey) return next();
-  const provided = req.header('x-api-key');
-  if (provided !== apiKey) {
-    return res.status(401).json({ error: 'Unauthorized' });
+function normalizeUsername(value) {
+  return String(value || '').trim();
+}
+
+function isUsernameValid(username) {
+  return /^[A-Za-z0-9_]{3,24}$/.test(username);
+}
+
+function isPasswordValid(password) {
+  return typeof password === 'string' && password.length >= 6 && password.length <= 128;
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex');
+}
+
+function safeEqualHex(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  const left = Buffer.from(a, 'hex');
+  const right = Buffer.from(b, 'hex');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function encodeBase64Url(value) {
+  return Buffer.from(value).toString('base64url');
+}
+
+function decodeBase64Url(value) {
+  return Buffer.from(value, 'base64url').toString('utf8');
+}
+
+function issueAuthToken(username, isAdmin) {
+  const expUnix = Math.floor(Date.now() / 1000) + authTokenTtlSec;
+  const payloadObj = {
+    sub: username,
+    admin: !!isAdmin,
+    exp: expUnix
+  };
+  const payload = encodeBase64Url(JSON.stringify(payloadObj));
+  const signature = crypto.createHmac('sha256', authTokenSecret).update(payload).digest('base64url');
+  const expiresUtc = new Date(expUnix * 1000).toISOString();
+  return {
+    token: `${payload}.${signature}`,
+    expiresUtc
+  };
+}
+
+function verifyAuthToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payload, providedSignature] = parts;
+  const expectedSignature = crypto.createHmac('sha256', authTokenSecret).update(payload).digest('base64url');
+  if (providedSignature.length !== expectedSignature.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(providedSignature), Buffer.from(expectedSignature))) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(decodeBase64Url(payload));
+  } catch {
+    return null;
   }
-  next();
-});
+
+  if (!parsed || typeof parsed.sub !== 'string' || typeof parsed.exp !== 'number') return null;
+  if (parsed.exp <= Math.floor(Date.now() / 1000)) return null;
+
+  return {
+    username: parsed.sub,
+    isAdmin: !!parsed.admin,
+    expUnix: parsed.exp
+  };
+}
+
+function readBearerToken(req) {
+  const header = req.header('authorization') || '';
+  const prefix = 'Bearer ';
+  if (!header.startsWith(prefix)) return '';
+  return header.slice(prefix.length).trim();
+}
+
+function buildDefaultProgress() {
+  return {
+    MetaCoins: 0,
+    CoreHealthLevel: 0,
+    TowerDamageLevel: 0,
+    TowerFireRateLevel: 0,
+    RepairPowerLevel: 0,
+    BestEasy: 0,
+    BestNormal: 0,
+    BestHard: 0,
+    UpdatedUtc: new Date().toISOString()
+  };
+}
 
 async function isUserBanned(username) {
   const result = await pool.query(
@@ -49,9 +140,128 @@ async function isUserBanned(username) {
   };
 }
 
+async function userAccountExists(username) {
+  const result = await pool.query(
+    'select 1 from user_accounts where username = $1 limit 1',
+    [username]
+  );
+  return result.rows.length > 0;
+}
+
+app.post('/api/auth/register', async (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  const password = String(req.body?.password || '');
+
+  if (!isUsernameValid(username)) {
+    return res.status(400).json({ error: 'username must match [A-Za-z0-9_] and be 3..24 chars' });
+  }
+  if (!isPasswordValid(password)) {
+    return res.status(400).json({ error: 'password must be 6..128 chars' });
+  }
+
+  try {
+    const existingFlag = await isUserBanned(username);
+    if (existingFlag.banned) {
+      return res.status(403).json({ error: 'banned', reason: existingFlag.reason || 'Access denied' });
+    }
+
+    const existing = await pool.query('select 1 from user_accounts where username = $1 limit 1', [username]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'username already exists' });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = hashPassword(password, salt);
+
+    await pool.query(
+      `insert into user_accounts (username, password_hash, salt, is_admin, created_at, updated_at)
+       values ($1, $2, $3, false, now(), now())`,
+      [username, passwordHash, salt]
+    );
+
+    await pool.query(
+      `insert into user_progress (username, data, updated_at)
+       values ($1, $2::jsonb, now())
+       on conflict (username)
+       do nothing`,
+      [username, JSON.stringify(buildDefaultProgress())]
+    );
+
+    const session = issueAuthToken(username, false);
+    return res.status(201).json({
+      username,
+      token: session.token,
+      isAdmin: false,
+      expiresUtc: session.expiresUtc
+    });
+  } catch (err) {
+    console.error('POST /api/auth/register error', err);
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  const password = String(req.body?.password || '');
+
+  if (!isUsernameValid(username) || !isPasswordValid(password)) {
+    return res.status(400).json({ error: 'invalid credentials format' });
+  }
+
+  try {
+    const result = await pool.query(
+      `select username, password_hash, salt, is_admin
+       from user_accounts
+       where username = $1
+       limit 1`,
+      [username]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+
+    const row = result.rows[0];
+    const inputHash = hashPassword(password, row.salt);
+    if (!safeEqualHex(inputHash, row.password_hash)) {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+
+    const flag = await isUserBanned(username);
+    if (flag.banned) {
+      return res.status(403).json({ error: 'banned', reason: flag.reason || 'Access denied' });
+    }
+
+    const session = issueAuthToken(username, !!row.is_admin);
+    return res.status(200).json({
+      username,
+      token: session.token,
+      isAdmin: !!row.is_admin,
+      expiresUtc: session.expiresUtc
+    });
+  } catch (err) {
+    console.error('POST /api/auth/login error', err);
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/auth')) return next();
+
+  const token = readBearerToken(req);
+  const auth = verifyAuthToken(token);
+  if (!auth) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  req.auth = auth;
+  next();
+});
+
 app.get('/api/progress/:username', async (req, res) => {
-  const username = String(req.params.username || '').trim();
+  const username = normalizeUsername(req.params.username);
   if (!username) return res.status(400).json({ error: 'username required' });
+  if (req.auth.username !== username) return res.status(403).json({ error: 'forbidden' });
 
   try {
     const flag = await isUserBanned(username);
@@ -65,17 +275,7 @@ app.get('/api/progress/:username', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(200).json({
-        MetaCoins: 0,
-        CoreHealthLevel: 0,
-        TowerDamageLevel: 0,
-        TowerFireRateLevel: 0,
-        RepairPowerLevel: 0,
-        BestEasy: 0,
-        BestNormal: 0,
-        BestHard: 0,
-        UpdatedUtc: new Date().toISOString()
-      });
+      return res.status(200).json(buildDefaultProgress());
     }
 
     return res.status(200).json(result.rows[0].data);
@@ -86,8 +286,9 @@ app.get('/api/progress/:username', async (req, res) => {
 });
 
 app.put('/api/progress/:username', async (req, res) => {
-  const username = String(req.params.username || '').trim();
+  const username = normalizeUsername(req.params.username);
   if (!username) return res.status(400).json({ error: 'username required' });
+  if (req.auth.username !== username) return res.status(403).json({ error: 'forbidden' });
 
   const payload = req.body;
   if (!payload || typeof payload !== 'object') {
@@ -128,12 +329,8 @@ app.put('/api/progress/:username', async (req, res) => {
 });
 
 app.use('/api/admin', (req, res, next) => {
-  if (!adminKey) {
-    return res.status(503).json({ error: 'ADMIN_KEY not configured' });
-  }
-  const provided = req.header('x-admin-key');
-  if (provided !== adminKey) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  if (!req.auth?.isAdmin) {
+    return res.status(403).json({ error: 'forbidden' });
   }
   next();
 });
@@ -146,18 +343,32 @@ app.get('/api/admin/users', async (req, res) => {
     let result;
     if (q.length > 0) {
       result = await pool.query(
-        `select username, data, updated_at
-         from user_progress
-         where lower(username) like $1
-         order by updated_at desc
+        `select
+            a.username,
+            coalesce(p.data, '{}'::jsonb) as data,
+            coalesce(p.updated_at, a.updated_at) as updated_at,
+            coalesce(f.banned, false) as banned,
+            coalesce(f.reason, '') as ban_reason
+         from user_accounts a
+         left join user_progress p on p.username = a.username
+         left join user_flags f on f.username = a.username
+         where lower(a.username) like $1
+         order by coalesce(p.updated_at, a.updated_at) desc
          limit $2`,
         [`%${q}%`, limit]
       );
     } else {
       result = await pool.query(
-        `select username, data, updated_at
-         from user_progress
-         order by updated_at desc
+        `select
+            a.username,
+            coalesce(p.data, '{}'::jsonb) as data,
+            coalesce(p.updated_at, a.updated_at) as updated_at,
+            coalesce(f.banned, false) as banned,
+            coalesce(f.reason, '') as ban_reason
+         from user_accounts a
+         left join user_progress p on p.username = a.username
+         left join user_flags f on f.username = a.username
+         order by coalesce(p.updated_at, a.updated_at) desc
          limit $1`,
         [limit]
       );
@@ -174,15 +385,9 @@ app.get('/api/admin/users', async (req, res) => {
       bestNormal: Number(r.data?.BestNormal || 0),
       bestHard: Number(r.data?.BestHard || 0),
       updatedUtc: r.updated_at,
-      banned: false,
-      banReason: ''
+      banned: !!r.banned,
+      banReason: r.ban_reason || ''
     }));
-
-    for (let i = 0; i < users.length; i++) {
-      const f = await isUserBanned(users[i].username);
-      users[i].banned = f.banned;
-      users[i].banReason = f.reason;
-    }
 
     return res.status(200).json({ users });
   } catch (err) {
@@ -192,29 +397,24 @@ app.get('/api/admin/users', async (req, res) => {
 });
 
 app.post('/api/admin/grant-coins', async (req, res) => {
-  const username = String(req.body?.username || '').trim();
-  const delta = Number(req.body?.delta || 0);
+  const username = normalizeUsername(req.body?.username);
+  const delta = Math.trunc(Number(req.body?.delta || 0));
 
   if (!username) return res.status(400).json({ error: 'username required' });
   if (!Number.isFinite(delta) || delta === 0) return res.status(400).json({ error: 'delta must be non-zero number' });
+  if (Math.abs(delta) > 1_000_000) return res.status(400).json({ error: 'delta is too large' });
 
   try {
+    if (!(await userAccountExists(username))) {
+      return res.status(404).json({ error: 'user not found' });
+    }
+
     const existing = await pool.query(
       'select data from user_progress where username = $1 limit 1',
       [username]
     );
 
-    const base = existing.rows.length === 0 ? {
-      MetaCoins: 0,
-      CoreHealthLevel: 0,
-      TowerDamageLevel: 0,
-      TowerFireRateLevel: 0,
-      RepairPowerLevel: 0,
-      BestEasy: 0,
-      BestNormal: 0,
-      BestHard: 0
-    } : existing.rows[0].data;
-
+    const base = existing.rows.length === 0 ? buildDefaultProgress() : existing.rows[0].data;
     const next = {
       ...base,
       MetaCoins: Math.max(0, Number(base.MetaCoins || 0) + delta),
@@ -237,22 +437,16 @@ app.post('/api/admin/grant-coins', async (req, res) => {
 });
 
 app.post('/api/admin/reset-user', async (req, res) => {
-  const username = String(req.body?.username || '').trim();
+  const username = normalizeUsername(req.body?.username);
   if (!username) return res.status(400).json({ error: 'username required' });
 
-  const clean = {
-    MetaCoins: 0,
-    CoreHealthLevel: 0,
-    TowerDamageLevel: 0,
-    TowerFireRateLevel: 0,
-    RepairPowerLevel: 0,
-    BestEasy: 0,
-    BestNormal: 0,
-    BestHard: 0,
-    UpdatedUtc: new Date().toISOString()
-  };
+  const clean = buildDefaultProgress();
 
   try {
+    if (!(await userAccountExists(username))) {
+      return res.status(404).json({ error: 'user not found' });
+    }
+
     await pool.query(
       `insert into user_progress (username, data, updated_at)
        values ($1, $2::jsonb, now())
@@ -268,12 +462,17 @@ app.post('/api/admin/reset-user', async (req, res) => {
 });
 
 app.post('/api/admin/delete-user', async (req, res) => {
-  const username = String(req.body?.username || '').trim();
+  const username = normalizeUsername(req.body?.username);
   if (!username) return res.status(400).json({ error: 'username required' });
 
   try {
+    if (!(await userAccountExists(username))) {
+      return res.status(404).json({ error: 'user not found' });
+    }
+
     await pool.query('delete from user_progress where username = $1', [username]);
     await pool.query('delete from user_flags where username = $1', [username]);
+    await pool.query('delete from user_accounts where username = $1', [username]);
     return res.status(200).json({ ok: true, username });
   } catch (err) {
     console.error('POST /api/admin/delete-user error', err);
@@ -282,12 +481,16 @@ app.post('/api/admin/delete-user', async (req, res) => {
 });
 
 app.post('/api/admin/ban-user', async (req, res) => {
-  const username = String(req.body?.username || '').trim();
+  const username = normalizeUsername(req.body?.username);
   const banned = !!req.body?.banned;
   const reason = String(req.body?.reason || '').trim();
   if (!username) return res.status(400).json({ error: 'username required' });
 
   try {
+    if (!(await userAccountExists(username))) {
+      return res.status(404).json({ error: 'user not found' });
+    }
+
     await pool.query(
       `insert into user_flags (username, banned, reason, updated_at)
        values ($1, $2, $3, now())

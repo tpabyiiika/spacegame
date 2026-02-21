@@ -1,0 +1,77 @@
+.menu-input {
+    margin-top: 8px;
+    margin-right: 10px;
+    margin-bottom: 8px;
+    margin-left: 10px;
+}
+
+.menu-input .unity-base-field__label {
+    min-width: 180px;
+    padding-right: 12px;
+    color: rgba(190, 240, 255, 0.96);
+    font-size: 24px;
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.72);
+    -unity-font-definition: url('project://database/Assets/Fonts/Candy_beans/Candy%20Beans%20SDF.asset?fileID=11400000&guid=4fb97fa8f3eeb234da27440138e7059d&type=2#Candy Beans SDF');
+}
+
+.menu-input .unity-base-field__input,
+.menu-input .unity-base-text-field__input,
+.menu-input .unity-text-field__input,
+.menu-input .unity-text-input,
+.menu-input .unity-text-field__input--multiline {
+    min-height: 48px;
+    padding-top: 8px;
+    padding-right: 12px;
+    padding-bottom: 8px;
+    padding-left: 12px;
+    border-top-width: 1px;
+    border-right-width: 1px;
+    border-bottom-width: 1px;
+    border-left-width: 1px;
+    border-top-color: rgba(120, 220, 232, 0.45);
+    border-right-color: rgba(120, 220, 232, 0.45);
+    border-bottom-color: rgba(120, 220, 232, 0.45);
+    border-left-color: rgba(120, 220, 232, 0.45);
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+    border-bottom-right-radius: 12px;
+    border-bottom-left-radius: 12px;
+    background-color: rgba(5, 10, 20, 0.96);
+    color: rgb(240, 246, 255);
+    text-shadow: 0 0 8px rgba(0, 0, 0, 0.85);
+    caret-color: rgb(120, 220, 232);
+    -unity-font-definition: url('project://database/Assets/Fonts/Candy_beans/Candy%20Beans%20SDF.asset?fileID=11400000&guid=4fb97fa8f3eeb234da27440138e7059d&type=2#Candy Beans SDF');
+}
+
+.menu-input:hover .unity-base-field__input,
+.menu-input:hover .unity-base-text-field__input,
+.menu-input:hover .unity-text-field__input,
+.menu-input:hover .unity-text-input,
+.menu-input:hover .unity-text-field__input--multiline {
+    background-color: rgba(10, 18, 34, 0.96);
+    border-top-color: rgba(190, 240, 255, 0.6);
+    border-right-color: rgba(190, 240, 255, 0.6);
+    border-bottom-color: rgba(190, 240, 255, 0.6);
+    border-left-color: rgba(190, 240, 255, 0.6);
+}
+
+.menu-input:focus-within .unity-base-field__input,
+.menu-input:focus-within .unity-base-text-field__input,
+.menu-input:focus-within .unity-text-field__input,
+.menu-input:focus-within .unity-text-input,
+.menu-input:focus-within .unity-text-field__input--multiline,
+.menu-input .unity-base-field__input:focus,
+.menu-input .unity-base-text-field__input:focus,
+.menu-input .unity-text-field__input:focus,
+.menu-input .unity-text-input:focus,
+.menu-input .unity-text-field__input--multiline:focus {
+    background-color: rgba(12, 24, 42, 0.98);
+    border-top-color: rgb(255, 216, 102);
+    border-right-color: rgb(255, 216, 102);
+    border-bottom-color: rgb(255, 216, 102);
+    border-left-color: rgb(255, 216, 102);
+}
+
+.menu-input:focus-within .unity-base-field__label {
+    color: rgb(255, 216, 102);
+}
