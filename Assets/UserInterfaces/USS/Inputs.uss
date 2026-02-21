@@ -55,11 +55,6 @@
     border-left-color: rgba(190, 240, 255, 0.6);
 }
 
-.menu-input:focus-within .unity-base-field__input,
-.menu-input:focus-within .unity-base-text-field__input,
-.menu-input:focus-within .unity-text-field__input,
-.menu-input:focus-within .unity-text-input,
-.menu-input:focus-within .unity-text-field__input--multiline,
 .menu-input .unity-base-field__input:focus,
 .menu-input .unity-base-text-field__input:focus,
 .menu-input .unity-text-field__input:focus,
@@ -70,8 +65,4 @@
     border-right-color: rgb(255, 216, 102);
     border-bottom-color: rgb(255, 216, 102);
     border-left-color: rgb(255, 216, 102);
-}
-
-.menu-input:focus-within .unity-base-field__label {
-    color: rgb(255, 216, 102);
 }
