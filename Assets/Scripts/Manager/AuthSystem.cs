@@ -138,16 +138,16 @@ public static class AuthSystem
         if (string.IsNullOrWhiteSpace(expiresUtc))
             return true;
 
-        if (!DateTime.TryParse(
+        if (!DateTimeOffset.TryParse(
                 expiresUtc,
                 CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind | DateTimeStyles.AssumeUniversal,
-                out DateTime parsed))
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsed))
         {
             return true;
         }
 
-        return parsed <= DateTime.UtcNow.AddSeconds(5);
+        return parsed <= DateTimeOffset.UtcNow.AddSeconds(5);
     }
 
     private static string Normalize(string value)
